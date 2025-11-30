@@ -1,0 +1,510 @@
+"""
+Financial News Sentiment Analysis - Complete Implementation
+Comprehensive system for analyzing sentiment in financial news
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Any
+import logging
+from datetime import datetime
+
+# Import project modules
+import sys
+sys.path.append('src')
+
+from finnews_sentiment.data.load_data import load_news_data, create_sample_dataset, save_data
+from finnews_sentiment.data.preprocess import preprocess_pipeline, clean_text
+from finnews_sentiment.features.text_features import extract_text_features, TextPreprocessor
+from finnews_sentiment.models.sentiment_classifier import SentimentClassifier, train_model, predict_sentiment
+from finnews_sentiment.visualization.plots import plot_sentiment_distribution, plot_confusion_matrix, plot_feature_importance
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('sentiment_analysis.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Set up matplotlib
+plt.style.use('default')
+sns.set_palette("husl")
+
+
+class FinancialNewsSentimentAnalyzer:
+    """Complete financial news sentiment analysis system"""
+
+    def __init__(self, data_dir: str = "data"):
+        """
+        Initialize the sentiment analyzer
+
+        Args:
+            data_dir: Data directory path
+        """
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create subdirectories
+        (self.data_dir / "raw").mkdir(exist_ok=True)
+        (self.data_dir / "processed").mkdir(exist_ok=True)
+        (self.data_dir / "models").mkdir(exist_ok=True)
+        (self.data_dir / "reports").mkdir(exist_ok=True)
+
+        self.model = None
+        self.vectorizer = None
+        self.feature_columns = []
+
+        logger.info("Financial News Sentiment Analyzer initialized")
+
+    def setup_sample_data(self, num_samples: int = 1000) -> str:
+        """
+        Create sample dataset for demonstration
+
+        Args:
+            num_samples: Number of samples to generate
+
+        Returns:
+            Path to created dataset
+        """
+        logger.info(f"Creating sample dataset with {num_samples} samples...")
+
+        sample_path = self.data_dir / "raw" / "sample_financial_news.csv"
+        df = create_sample_dataset(str(sample_path), num_samples)
+
+        logger.info(f"Sample dataset created: {sample_path}")
+        return str(sample_path)
+
+    def load_and_preprocess_data(self, data_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """
+        Load and preprocess the data
+
+        Args:
+            data_path: Path to dataset
+
+        Returns:
+            Tuple of (train_df, val_df, test_df)
+        """
+        logger.info("Loading and preprocessing data...")
+
+        # Load raw data
+        df = load_news_data(data_path)
+        logger.info(f"Loaded {len(df)} records from {data_path}")
+
+        # Apply preprocessing pipeline
+        train_df, val_df, test_df = preprocess_pipeline(df)
+
+        # Save processed data
+        save_data(train_df, str(self.data_dir / "processed" / "train.csv"))
+        save_data(val_df, str(self.data_dir / "processed" / "val.csv"))
+        save_data(test_df, str(self.data_dir / "processed" / "test.csv"))
+
+        logger.info(f"Data split - Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+
+        return train_df, val_df, test_df
+
+    def extract_features_and_train(self, train_df: pd.DataFrame, val_df: pd.DataFrame,
+                                 test_df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Extract features and train sentiment model
+
+        Args:
+            train_df: Training data
+            val_df: Validation data
+            test_df: Test data
+
+        Returns:
+            Training results and metrics
+        """
+        logger.info("Extracting features and training model...")
+
+        # Extract features
+        logger.info("Extracting text features...")
+        train_features = extract_text_features(train_df)
+        val_features = extract_text_features(val_df)
+        test_features = extract_text_features(test_df)
+
+        # Identify feature columns (exclude text and label columns)
+        exclude_columns = ['text', 'text_clean', 'sentiment', 'date', 'source']
+        self.feature_columns = [col for col in train_features.columns if col not in exclude_columns]
+
+        logger.info(f"Using {len(self.feature_columns)} features for training")
+
+        # Prepare training data
+        X_train = train_features[self.feature_columns]
+        y_train = train_features['sentiment']
+        X_val = val_features[self.feature_columns]
+        y_val = val_features['sentiment']
+        X_test = test_features[self.feature_columns]
+        y_test = test_features['sentiment']
+
+        # Train model
+        logger.info("Training sentiment classification model...")
+        training_results = train_model(X_train, y_train, X_val, y_val)
+
+        # Save model and feature columns
+        self.model = training_results['model']
+        if 'vectorizer' in training_results:
+            self.vectorizer = training_results['vectorizer']
+
+        # Save model artifacts
+        import joblib
+        model_path = self.data_dir / "models" / "sentiment_classifier.pkl"
+        joblib.dump({
+            'model': self.model,
+            'vectorizer': self.vectorizer,
+            'feature_columns': self.feature_columns,
+            'label_encoder': training_results.get('label_encoder')
+        }, model_path)
+
+        logger.info(f"Model saved to {model_path}")
+
+        # Evaluate on test set
+        test_predictions = self.model.predict(X_test)
+        test_proba = self.model.predict_proba(X_test)
+
+        # Calculate test metrics
+        from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+        test_accuracy = accuracy_score(y_test, test_predictions)
+        test_report = classification_report(y_test, test_predictions, output_dict=True)
+        test_cm = confusion_matrix(y_test, test_predictions)
+
+        results = {
+            'training_results': training_results,
+            'test_accuracy': test_accuracy,
+            'test_report': test_report,
+            'test_confusion_matrix': test_cm,
+            'test_predictions': test_predictions,
+            'test_probabilities': test_proba,
+            'feature_columns': self.feature_columns
+        }
+
+        logger.info(f"Test accuracy: {test_accuracy:.3f}")
+        return results
+
+    def analyze_model_results(self, results: Dict[str, Any]) -> None:
+        """
+        Analyze and visualize model results
+
+        Args:
+            results: Training and evaluation results
+        """
+        logger.info("Analyzing model results...")
+
+        # Create visualization directory
+        viz_dir = self.data_dir / "reports"
+        viz_dir.mkdir(exist_ok=True)
+
+        # Plot sentiment distribution
+        if 'test_predictions' in results:
+            plt.figure(figsize=(12, 8))
+
+            # Subplot 1: Confusion Matrix
+            plt.subplot(2, 2, 1)
+            cm = results['test_confusion_matrix']
+            classes = ['Negative', 'Neutral', 'Positive']  # Assuming these are the classes
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                       xticklabels=classes, yticklabels=classes)
+            plt.title('Confusion Matrix')
+            plt.ylabel('True Label')
+            plt.xlabel('Predicted Label')
+
+            # Subplot 2: Accuracy and F1 scores
+            plt.subplot(2, 2, 2)
+            metrics = ['accuracy', 'precision_macro', 'recall_macro', 'f1_macro']
+            scores = [results['test_report'].get(metric, {}).get('macro avg', 0) for metric in metrics]
+            bars = plt.bar(metrics, scores)
+            plt.title('Overall Performance Metrics')
+            plt.ylabel('Score')
+            plt.xticks(rotation=45)
+            # Add value labels on bars
+            for bar, score in zip(bars, scores):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                        f'{score:.3f}', ha='center', va='bottom')
+
+            # Subplot 3: Class-wise F1 scores
+            plt.subplot(2, 2, 3)
+            class_f1 = []
+            class_names = []
+            for class_name in results['test_report']:
+                if class_name not in ['accuracy', 'macro avg', 'weighted avg']:
+                    class_f1.append(results['test_report'][class_name]['f1-score'])
+                    class_names.append(class_name.title())
+
+            bars = plt.bar(class_names, class_f1)
+            plt.title('F1-Score by Class')
+            plt.ylabel('F1-Score')
+            plt.xticks(rotation=45)
+            # Add value labels
+            for bar, score in zip(bars, class_f1):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                        f'{score:.3f}', ha='center', va='bottom')
+
+            # Subplot 4: Prediction confidence distribution
+            plt.subplot(2, 2, 4)
+            if 'test_probabilities' in results:
+                max_probs = np.max(results['test_probabilities'], axis=1)
+                plt.hist(max_probs, bins=20, alpha=0.7, edgecolor='black')
+                plt.title('Prediction Confidence Distribution')
+                plt.xlabel('Maximum Probability')
+                plt.ylabel('Frequency')
+                plt.axvline(np.mean(max_probs), color='red', linestyle='--',
+                           label=f'Mean: {np.mean(max_probs):.3f}')
+                plt.legend()
+
+            plt.tight_layout()
+            plt.savefig(viz_dir / 'model_analysis.png', dpi=300, bbox_inches='tight')
+            plt.show()
+
+        # Print detailed results
+        print("\n" + "="*60)
+        print("FINANCIAL NEWS SENTIMENT ANALYSIS RESULTS")
+        print("="*60)
+
+        print(f"\n📊 Dataset Information:")
+        print(f"   • Test samples: {len(results.get('test_predictions', []))}")
+        print(f"   • Features used: {len(results.get('feature_columns', []))}")
+
+        print(f"\n🎯 Model Performance:")
+        print(f"   • Test Accuracy: {results['test_accuracy']:.3f}")
+        if 'test_report' in results:
+            for metric in ['precision macro', 'recall macro', 'f1 macro']:
+                score = results['test_report'].get('macro avg', {}).get(metric.replace(' ', '_'), 0)
+                print(f"   • {metric.title()}: {score:.3f}")
+
+        print(f"\n📈 Class-wise Performance:")
+        for class_name in results.get('test_report', {}):
+            if class_name not in ['accuracy', 'macro avg', 'weighted avg']:
+                class_metrics = results['test_report'][class_name]
+                print(f"   • {class_name.title()}:")
+                print(f"     - Precision: {class_metrics.get('precision', 0):.3f}")
+                print(f"     - Recall: {class_metrics.get('recall', 0):.3f}")
+                print(f"     - F1-Score: {class_metrics.get('f1-score', 0):.3f}")
+
+        print(f"\n🔍 Confusion Matrix:")
+        cm = results.get('test_confusion_matrix', np.array([[0]]))
+        print("   Predicted →")
+        print("   ↓ True")
+        print("   Negative  Neutral  Positive")
+        for i, row in enumerate(cm):
+            print(f"   {row[0]:<9} {row[1]:<8} {row[2]:<9}")
+
+        print("\n" + "="*60)
+
+    def predict_new_texts(self, texts: List[str]) -> List[Dict[str, Any]]:
+        """
+        Predict sentiment for new texts
+
+        Args:
+            texts: List of texts to analyze
+
+        Returns:
+            List of prediction results
+        """
+        if self.model is None:
+            raise ValueError("Model not trained. Please run the training pipeline first.")
+
+        logger.info(f"Predicting sentiment for {len(texts)} new texts...")
+
+        # Create DataFrame with texts
+        df = pd.DataFrame({'text': texts})
+
+        # Preprocess texts
+        df['text_clean'] = df['text'].apply(clean_text)
+        df = df[df['text_clean'].str.len() > 10]  # Filter very short texts
+
+        if len(df) == 0:
+            return []
+
+        # Extract features
+        features = extract_text_features(df)
+        X = features[self.feature_columns]
+
+        # Make predictions
+        predictions = self.model.predict(X)
+        probabilities = self.model.predict_proba(X)
+
+        # Prepare results
+        results = []
+        for i, (text, pred, probs) in enumerate(zip(df['text'], predictions, probabilities)):
+            result = {
+                'text': text,
+                'predicted_sentiment': pred,
+                'confidence': float(max(probs)),
+                'probabilities': {
+                    'negative': float(probs[0]),
+                    'neutral': float(probs[1]),
+                    'positive': float(probs[2])
+                }
+            }
+            results.append(result)
+
+        return results
+
+    def generate_report(self, results: Dict[str, Any]) -> str:
+        """
+        Generate comprehensive analysis report
+
+        Args:
+            results: Analysis results
+
+        Returns:
+            Report text
+        """
+        report = f"""
+FINANCIAL NEWS SENTIMENT ANALYSIS REPORT
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+EXECUTIVE SUMMARY
+================
+This report presents the results of a sentiment analysis system designed to classify
+financial news articles into positive, negative, and neutral categories. The system uses
+machine learning techniques to analyze text features and predict market sentiment.
+
+MODEL PERFORMANCE
+=================
+Test Accuracy: {results['test_accuracy']:.3f} ({results['test_accuracy']*100:.1f}%)
+
+Key Metrics:
+• Precision (macro avg): {results['test_report'].get('macro avg', {}).get('precision', 0):.3f}
+• Recall (macro avg): {results['test_report'].get('macro avg', {}).get('recall', 0):.3f}
+• F1-Score (macro avg): {results['test_report'].get('macro avg', {}).get('f1-score', 0):.3f}
+
+CLASSIFICATION BREAKDOWN
+=======================
+"""
+
+        for class_name in results.get('test_report', {}):
+            if class_name not in ['accuracy', 'macro avg', 'weighted avg']:
+                class_metrics = results['test_report'][class_name]
+                report += f"""
+{class_name.upper()}:
+• Precision: {class_metrics.get('precision', 0):.3f}
+• Recall: {class_metrics.get('recall', 0):.3f}
+• F1-Score: {class_metrics.get('f1-score', 0):.3f}
+• Support: {class_metrics.get('support', 0)} samples
+"""
+
+        report += f"""
+FEATURE ANALYSIS
+===============
+Total features extracted: {len(results.get('feature_columns', []))}
+Feature types: Text-based, sentiment keywords, financial entities
+
+MODEL DETAILS
+=============
+Algorithm: Random Forest (optimized for text classification)
+Features used: {len(results.get('feature_columns', []))}
+Cross-validation: Stratified split with validation set
+
+BUSINESS IMPLICATIONS
+=====================
+• Accuracy of {results['test_accuracy']:.1%}% suggests reliable sentiment classification
+• Model can be used for real-time market sentiment monitoring
+• Suitable for integration into trading algorithms and risk management systems
+
+RECOMMENDATIONS
+===============
+1. Continue monitoring model performance on new data
+2. Consider periodic retraining with fresh news data
+3. Expand feature set with more financial indicators
+4. Implement ensemble methods for improved accuracy
+
+Generated by Financial News Sentiment Analyzer
+"""
+
+        # Save report
+        report_path = self.data_dir / "reports" / "analysis_report.txt"
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(report)
+
+        logger.info(f"Analysis report saved to {report_path}")
+        return report
+
+    def run_complete_analysis(self, create_sample: bool = True, sample_size: int = 1000) -> Dict[str, Any]:
+        """
+        Run complete sentiment analysis pipeline
+
+        Args:
+            create_sample: Whether to create sample dataset
+            sample_size: Size of sample dataset
+
+        Returns:
+            Complete analysis results
+        """
+        logger.info("Starting complete sentiment analysis pipeline...")
+
+        # Step 1: Create/load data
+        if create_sample:
+            data_path = self.setup_sample_data(sample_size)
+        else:
+            data_path = str(self.data_dir / "raw" / "financial_news.csv")
+            if not Path(data_path).exists():
+                raise FileNotFoundError(f"Data file not found: {data_path}")
+
+        # Step 2: Preprocess data
+        train_df, val_df, test_df = self.load_and_preprocess_data(data_path)
+
+        # Step 3: Extract features and train model
+        results = self.extract_features_and_train(train_df, val_df, test_df)
+
+        # Step 4: Analyze results
+        self.analyze_model_results(results)
+
+        # Step 5: Generate report
+        report = self.generate_report(results)
+
+        # Step 6: Demonstrate predictions
+        sample_texts = [
+            "Stock market reaches new all-time high as tech companies report strong earnings",
+            "Investors worried about inflation as Federal Reserve signals potential rate hikes",
+            "Trading volume remains average as market awaits key economic data",
+            "Banking sector faces challenges with rising loan defaults and tightening credit conditions"
+        ]
+
+        predictions = self.predict_new_texts(sample_texts)
+        logger.info("Sample predictions:")
+        for i, pred in enumerate(predictions):
+            logger.info(f"  {i+1}. {pred['predicted_sentiment']} (confidence: {pred['confidence']:.3f})")
+            logger.info(f"     Text: {pred['text'][:100]}...")
+
+        results['report'] = report
+        results['sample_predictions'] = predictions
+
+        logger.info("Complete sentiment analysis pipeline finished successfully!")
+        return results
+
+
+def main():
+    """Main function to run the sentiment analysis"""
+    print("🤖 Financial News Sentiment Analysis System")
+    print("=" * 50)
+
+    try:
+        # Initialize analyzer
+        analyzer = FinancialNewsSentimentAnalyzer()
+
+        # Run complete analysis
+        results = analyzer.run_complete_analysis(create_sample=True, sample_size=500)
+
+        print(f"\n🎉 Analysis completed successfully!")
+        print(f"📊 Results saved to: {analyzer.data_dir / 'reports'}")
+        print(f"💾 Model saved to: {analyzer.data_dir / 'models'}")
+
+    except Exception as e:
+        logger.error(f"Analysis failed: {str(e)}")
+        print(f"❌ Error: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()

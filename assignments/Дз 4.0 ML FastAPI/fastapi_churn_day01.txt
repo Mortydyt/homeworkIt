@@ -1,0 +1,14 @@
+<b>День 1 — Базовое приложение FastAPI</b>
+
+🎯 <b>Цель дня</b>
+Поднять минимальное приложение FastAPI и убедиться что оно работает.
+
+📋 <b>Задачи</b>
+1. 📦 Установить <code>fastapi</code> и <code>uvicorn</code>
+2. 📄 Создать файл <code>main.py</code>
+3. 🚀 Создать объект приложения <code>app = FastAPI()</code>
+4. 🔗 Добавить эндпоинт <code>GET /</code> который возвращает словарь <code>{"message": "ml churn service is running"}</code>
+5. ▶️ Запустить приложение командой <code>uvicorn main:app --reload</code> и проверить что сервис отвечает
+
+---
+<i>Удачи с реализацией!</i> 🚀
